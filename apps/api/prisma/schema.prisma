@@ -1,0 +1,507 @@
+// Ticket Management System — PostgreSQL schema
+// Conventions:
+//  * UUID primary keys, createdAt/updatedAt timestamps on mutable entities.
+//  * Users, tickets, teams and categories are never hard-deleted; they are deactivated
+//    or archived so history, audit trail and reports remain intact (onDelete: Restrict).
+//  * Join/child rows that are meaningless without their parent cascade.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+enum TicketStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  PENDING_CUSTOMER
+  ESCALATED
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum TicketSource {
+  WEB
+  EMAIL
+  PHONE
+  INTERNAL
+}
+
+enum TicketHistoryAction {
+  CREATED
+  UPDATED
+  STATUS_CHANGED
+  PRIORITY_CHANGED
+  ASSIGNED
+  UNASSIGNED
+  TEAM_CHANGED
+  ESCALATED
+  REOPENED
+  COMMENT_ADDED
+  INTERNAL_NOTE_ADDED
+  ATTACHMENT_ADDED
+  ATTACHMENT_REMOVED
+  TIME_LOGGED
+  SLA_WARNING
+  SLA_BREACHED
+  FEEDBACK_SUBMITTED
+  LINKED
+  UNLINKED
+}
+
+enum NotificationType {
+  TICKET_CREATED
+  TICKET_ASSIGNED
+  PRIORITY_CHANGED
+  NEW_REPLY
+  INTERNAL_NOTE
+  STATUS_CHANGED
+  SLA_WARNING
+  SLA_BREACHED
+  TICKET_ESCALATED
+  TICKET_RESOLVED
+  TICKET_CLOSED
+  TICKET_REOPENED
+}
+
+enum TeamMemberRole {
+  MEMBER
+  LEAD
+}
+
+// ─────────────────────── Identity & access ───────────────────────
+
+model Role {
+  id          String           @id @default(uuid())
+  key         String           @unique // SUPER_ADMIN, SUPPORT_MANAGER, SUPPORT_AGENT, CUSTOMER, or custom
+  name        String
+  description String?
+  isSystem    Boolean          @default(false) // system roles cannot be deleted
+  isStaff     Boolean          @default(false) // staff roles may act on behalf of the organisation
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  permissions RolePermission[]
+  users       User[]
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  key         String           @unique // e.g. "ticket.view_all"
+  description String
+  group       String
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model User {
+  id                 String    @id @default(uuid())
+  email              String    @unique
+  name               String
+  passwordHash       String
+  roleId             String
+  departmentId       String?
+  jobTitle           String?
+  phone              String?
+  organization       String? // for customers
+  isActive           Boolean   @default(true)
+  emailNotifications Boolean   @default(true)
+  failedLoginCount   Int       @default(0)
+  lockedUntil        DateTime?
+  lastLoginAt        DateTime?
+  passwordChangedAt  DateTime?
+  deactivatedAt      DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  role       Role        @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  refreshTokens     RefreshToken[]
+  teamMemberships   TeamMembership[]
+  requestedTickets  Ticket[]           @relation("TicketRequester")
+  assignedTickets   Ticket[]           @relation("TicketAssignee")
+  createdTickets    Ticket[]           @relation("TicketCreator")
+  comments          TicketComment[]
+  attachments       TicketAttachment[]
+  historyEntries    TicketHistory[]
+  assignmentsAsUser TicketAssignment[] @relation("AssignmentAssignee")
+  assignmentsMade   TicketAssignment[] @relation("AssignmentAssigner")
+  timeEntries       TimeEntry[]
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  feedback          CustomerFeedback[]
+
+  @@index([roleId])
+  @@index([departmentId])
+  @@index([isActive])
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid())
+  userId     String
+  tokenHash  String    @unique // SHA-256 of the opaque token; the raw token only lives in an HttpOnly cookie
+  familyId   String // rotation family; reuse of a revoked token revokes the family
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  userAgent  String?
+  ipAddress  String?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+// ─────────────────────────── Organisation ───────────────────────────
+
+model Department {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  teams       Team[]
+  users       User[]
+}
+
+model Team {
+  id           String           @id @default(uuid())
+  name         String
+  description  String?
+  email        String?
+  departmentId String
+  isActive     Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  department   Department       @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  members      TeamMembership[]
+  tickets      Ticket[]
+  assignments  TicketAssignment[]
+  categories   TicketCategory[]
+
+  @@unique([departmentId, name])
+}
+
+model TeamMembership {
+  teamId    String
+  userId    String
+  role      TeamMemberRole @default(MEMBER)
+  createdAt DateTime       @default(now())
+  team      Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([teamId, userId])
+  @@index([userId])
+}
+
+model TicketCategory {
+  id            String           @id @default(uuid())
+  name          String
+  description   String?
+  parentId      String? // null = top-level category, otherwise subcategory
+  defaultTeamId String?
+  isActive      Boolean          @default(true)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  parent        TicketCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children      TicketCategory[] @relation("CategoryTree")
+  defaultTeam   Team?            @relation(fields: [defaultTeamId], references: [id], onDelete: SetNull)
+  tickets       Ticket[]         @relation("TicketCategory")
+  subTickets    Ticket[]         @relation("TicketSubcategory")
+
+  @@unique([parentId, name])
+  @@index([parentId])
+}
+
+model Tag {
+  id        String      @id @default(uuid())
+  name      String      @unique
+  color     String      @default("#64748b")
+  createdAt DateTime    @default(now())
+  tickets   TicketTag[]
+}
+
+// ───────────────────────────── Tickets ─────────────────────────────
+
+model TicketCounter {
+  scope     String @id // e.g. "2026" when numbering resets yearly, or "global"
+  lastValue Int    @default(0)
+}
+
+model Ticket {
+  id              String         @id @default(uuid())
+  number          String         @unique
+  subject         String
+  description     String
+  status          TicketStatus   @default(OPEN)
+  priority        TicketPriority @default(MEDIUM)
+  source          TicketSource   @default(WEB)
+  requesterId     String
+  createdById     String
+  assigneeId      String?
+  teamId          String?
+  categoryId      String?
+  subcategoryId   String?
+  dueAt           DateTime?
+  resolutionNotes String?
+
+  // SLA tracking (deadlines computed from SlaPolicy + business calendar)
+  firstResponseDueAt     DateTime?
+  resolutionDueAt        DateTime?
+  firstResponseAt        DateTime?
+  firstResponseWarnedAt  DateTime?
+  resolutionWarnedAt     DateTime?
+  firstResponseBreachedAt DateTime?
+  resolutionBreachedAt   DateTime?
+  slaPausedAt            DateTime? // set while waiting on customer
+
+  escalationLevel Int       @default(0)
+  escalatedAt     DateTime?
+  reopenCount     Int       @default(0)
+  resolvedAt      DateTime?
+  closedAt        DateTime?
+  archivedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  requester   User            @relation("TicketRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  createdBy   User            @relation("TicketCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  assignee    User?           @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  team        Team?           @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  category    TicketCategory? @relation("TicketCategory", fields: [categoryId], references: [id], onDelete: SetNull)
+  subcategory TicketCategory? @relation("TicketSubcategory", fields: [subcategoryId], references: [id], onDelete: SetNull)
+
+  tags         TicketTag[]
+  comments     TicketComment[]
+  attachments  TicketAttachment[]
+  history      TicketHistory[]
+  assignments  TicketAssignment[]
+  timeEntries  TimeEntry[]
+  feedback     CustomerFeedback?
+  notifications Notification[]
+  linksFrom    TicketLink[]       @relation("LinkSource")
+  linksTo      TicketLink[]       @relation("LinkTarget")
+
+  @@index([status])
+  @@index([priority])
+  @@index([requesterId])
+  @@index([assigneeId])
+  @@index([teamId])
+  @@index([categoryId])
+  @@index([createdAt])
+  @@index([resolutionDueAt])
+  @@index([status, resolutionDueAt])
+}
+
+model TicketTag {
+  ticketId String
+  tagId    String
+  ticket   Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  tag      Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([ticketId, tagId])
+  @@index([tagId])
+}
+
+model TicketLink {
+  sourceId  String
+  targetId  String
+  createdAt DateTime @default(now())
+  source    Ticket   @relation("LinkSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  target    Ticket   @relation("LinkTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@id([sourceId, targetId])
+  @@index([targetId])
+}
+
+model TicketComment {
+  id          String             @id @default(uuid())
+  ticketId    String
+  authorId    String
+  body        String
+  isInternal  Boolean            @default(false) // internal notes are never returned to customers
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  ticket      Ticket             @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  author      User               @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  attachments TicketAttachment[]
+
+  @@index([ticketId, createdAt])
+}
+
+model TicketAttachment {
+  id           String         @id @default(uuid())
+  ticketId     String
+  commentId    String?
+  uploadedById String
+  originalName String
+  storageKey   String         @unique // random, never derived from user input
+  mimeType     String
+  size         Int
+  checksum     String // sha256
+  isInternal   Boolean        @default(false) // attached to an internal note
+  deletedAt    DateTime?
+  createdAt    DateTime       @default(now())
+  ticket       Ticket         @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  comment      TicketComment? @relation(fields: [commentId], references: [id], onDelete: SetNull)
+  uploadedBy   User           @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@index([ticketId])
+}
+
+model TicketHistory {
+  id         String              @id @default(uuid())
+  ticketId   String
+  actorId    String? // null = system (e.g. SLA monitor)
+  action     TicketHistoryAction
+  field      String?
+  oldValue   String?
+  newValue   String?
+  isInternal Boolean             @default(false)
+  metadata   Json?
+  createdAt  DateTime            @default(now())
+  ticket     Ticket              @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  actor      User?               @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+  @@index([createdAt])
+}
+
+model TicketAssignment {
+  id           String    @id @default(uuid())
+  ticketId     String
+  assigneeId   String?
+  teamId       String?
+  assignedById String?
+  assignedAt   DateTime  @default(now())
+  endedAt      DateTime?
+  ticket       Ticket    @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  assignee     User?     @relation("AssignmentAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  assignedBy   User?     @relation("AssignmentAssigner", fields: [assignedById], references: [id], onDelete: SetNull)
+  team         Team?     @relation(fields: [teamId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId])
+  @@index([assigneeId])
+}
+
+model TimeEntry {
+  id        String   @id @default(uuid())
+  ticketId  String
+  userId    String
+  minutes   Int
+  note      String?
+  workDate  DateTime @default(now())
+  createdAt DateTime @default(now())
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([ticketId])
+  @@index([userId, workDate])
+}
+
+model CustomerFeedback {
+  id          String   @id @default(uuid())
+  ticketId    String   @unique
+  requesterId String
+  rating      Int // 1..5, enforced by validation + CHECK constraint in migration
+  comment     String?
+  createdAt   DateTime @default(now())
+  ticket      Ticket   @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  requester   User     @relation(fields: [requesterId], references: [id], onDelete: Restrict)
+}
+
+// ─────────────────────────────── SLA ───────────────────────────────
+
+model SlaPolicy {
+  id                     String         @id @default(uuid())
+  name                   String
+  priority               TicketPriority @unique
+  firstResponseMinutes   Int
+  resolutionMinutes      Int
+  useBusinessHours       Boolean        @default(true)
+  warningThresholdPercent Int           @default(80) // warn when this % of the window has elapsed
+  escalateOnBreach       Boolean        @default(true)
+  isActive               Boolean        @default(true)
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+}
+
+model BusinessHours {
+  dayOfWeek    Int     @id // 1 = Monday … 7 = Sunday (ISO)
+  isWorkingDay Boolean @default(true)
+  startMinute  Int     @default(540) // minutes after local midnight (09:00)
+  endMinute    Int     @default(1020) // 17:00
+}
+
+model Holiday {
+  id        String   @id @default(uuid())
+  date      DateTime @unique @db.Date
+  name      String
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────── Notifications & audit ───────────────────────
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  ticketId  String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ticket    Ticket?          @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String // e.g. "user.create", "auth.login_failed"
+  entityType String
+  entityId   String?
+  metadata   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@index([actorId])
+}
+
+model SystemSetting {
+  key         String   @id
+  value       Json
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+}
