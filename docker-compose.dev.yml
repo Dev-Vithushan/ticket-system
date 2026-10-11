@@ -1,0 +1,17 @@
+# Development database only: run the API and web app on the host with `npm run dev:api` / `npm run dev:web`.
+name: ticket-system-dev
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ticket_dev
+      POSTGRES_USER: ticket
+      POSTGRES_PASSWORD: ticket # development only
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata-dev:/var/lib/postgresql/data
+volumes:
+  pgdata-dev:

@@ -1,7 +1,8 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/server.ts'],
+  // seed.js is shipped so production images can bootstrap the first Super Admin without dev tooling
+  entry: { server: 'src/server.ts', seed: 'prisma/seed.ts' },
   format: ['esm'],
   target: 'node20',
   platform: 'node',

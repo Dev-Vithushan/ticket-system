@@ -1,0 +1,73 @@
+# Production-style stack: PostgreSQL + API + web (nginx). Copy .env.example to .env and set real secrets first.
+name: ticket-system
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tickets}
+      POSTGRES_USER: ${POSTGRES_USER:-tickets}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published to the host; reachable only on the internal network.
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    init: true
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tickets}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-tickets}?schema=public
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
+      CORS_ORIGINS: ${APP_URL:-http://localhost:8080}
+      APP_URL: ${APP_URL:-http://localhost:8080}
+      TRUST_PROXY: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-10}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-Support Desk <support@example.com>}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_NAME: ${ADMIN_NAME:-Administrator}
+    volumes:
+      - attachments:/data/attachments
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+
+volumes:
+  pgdata:
+  attachments:
