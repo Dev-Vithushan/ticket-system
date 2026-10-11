@@ -293,7 +293,8 @@ async function seedDevelopmentData() {
     const comments: Prisma.TicketCommentCreateManyInput[] = [];
     if (assigneeId) {
       await prisma.ticketAssignment.create({ data: { ticketId: t.id, assigneeId, teamId: sub.teamId, assignedById: managers[0].id, assignedAt } });
-      history.push({ ticketId: t.id, actorId: managers[0].id, action: 'ASSIGNED', field: 'assignee', newValue: 'agent', createdAt: assignedAt });
+      const agentName = internalStaff.find((u) => u.id === assigneeId)?.name ?? null;
+      history.push({ ticketId: t.id, actorId: managers[0].id, action: 'ASSIGNED', field: 'assignee', newValue: agentName, createdAt: assignedAt });
       history.push({ ticketId: t.id, actorId: managers[0].id, action: 'STATUS_CHANGED', field: 'status', oldValue: 'OPEN', newValue: 'ASSIGNED', createdAt: assignedAt });
     }
     if (firstResponseAt && assigneeId) {

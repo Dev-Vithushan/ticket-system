@@ -333,7 +333,7 @@ export async function createTicket(input: CreateTicketInput, auth: AuthContext) 
     const team = await prisma.team.findFirst({ where: { id: teamId, isActive: true } });
     if (!team) throw badRequest('Unknown or inactive team');
   }
-  if (input.assigneeId) await validateAssignee(input.assigneeId, teamId);
+  const assignee = input.assigneeId ? await validateAssignee(input.assigneeId, teamId) : null;
 
   const settings = await getSettings();
   const now = new Date();
@@ -368,7 +368,7 @@ export async function createTicket(input: CreateTicketInput, auth: AuthContext) 
     ];
     if (t.assigneeId || t.teamId) {
       await tx.ticketAssignment.create({ data: { ticketId: t.id, assigneeId: t.assigneeId, teamId: t.teamId, assignedById: auth.user.id } });
-      if (t.assigneeId) history.push({ ticketId: t.id, actorId: auth.user.id, action: 'ASSIGNED', field: 'assignee', newValue: t.assigneeId });
+      if (assignee) history.push({ ticketId: t.id, actorId: auth.user.id, action: 'ASSIGNED', field: 'assignee', newValue: assignee.name });
     }
     await recordHistory(tx, history);
 

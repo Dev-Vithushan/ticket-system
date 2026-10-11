@@ -6,7 +6,7 @@ import { prisma } from '../../lib/prisma';
 import { defineRoute } from '../../lib/route';
 import { randomToken } from '../../lib/tokens';
 import { z } from '../../lib/zod';
-import { authLimiter } from '../../middleware/rateLimit';
+import { accountLimiter, credentialIpLimiter, credentialLimiter, refreshLimiter } from '../../middleware/rateLimit';
 import { getSettings } from '../../services/settings';
 import * as auth from './auth.service';
 
@@ -49,7 +49,7 @@ defineRoute(router, M, {
   tags,
   summary: 'Log in with email and password',
   description: 'Sets HttpOnly access and refresh cookies. Rate limited and protected by account lockout.',
-  middleware: [authLimiter],
+  middleware: [credentialIpLimiter, credentialLimiter],
   body: z.object({ email: z.string().trim().email().max(254), password: z.string().min(1).max(128) }),
   responses: { 200: 'Logged in', 401: 'Invalid credentials', 423: 'Account locked', 429: 'Rate limited' },
   handler: async ({ req, res, body }) => {
@@ -65,7 +65,7 @@ defineRoute(router, M, {
   auth: false,
   tags,
   summary: 'Self-register as a customer (when enabled in settings)',
-  middleware: [authLimiter],
+  middleware: [credentialIpLimiter, credentialLimiter],
   body: z.object({
     email: z.string().trim().email().max(254),
     name: z.string().trim().min(2).max(120),
@@ -87,7 +87,7 @@ defineRoute(router, M, {
   auth: false,
   tags,
   summary: 'Rotate the refresh token and issue a new access token',
-  middleware: [authLimiter],
+  middleware: [refreshLimiter],
   handler: async ({ req, res }) => {
     const raw = req.cookies?.[REFRESH_COOKIE];
     if (typeof raw !== 'string' || !raw) throw unauthorized('No session');
@@ -145,7 +145,7 @@ defineRoute(router, M, {
   path: '/change-password',
   tags,
   summary: 'Change own password (revokes all other sessions)',
-  middleware: [authLimiter],
+  middleware: [accountLimiter],
   body: z
     .object({ currentPassword: z.string().min(1).max(128), newPassword: passwordSchema })
     .refine((b) => b.currentPassword !== b.newPassword, { message: 'New password must differ', path: ['newPassword'] }),

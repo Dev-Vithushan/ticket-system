@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { prisma } from '../../src/lib/prisma';
 import { resetDb } from '../helpers/db';
-import { Client, createUser, insertTicket, standardFixture } from '../helpers/factories';
+import { Client, insertTicket, standardFixture } from '../helpers/factories';
 
 let fx: Awaited<ReturnType<typeof standardFixture>>;
 beforeEach(async () => {

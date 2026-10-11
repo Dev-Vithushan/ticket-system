@@ -61,7 +61,7 @@ export async function applyStatusChange(tx: Tx, t: TicketRow, input: StatusInput
     data.assigneeId = assigneeId;
     await tx.ticketAssignment.updateMany({ where: { ticketId: t.id, endedAt: null }, data: { endedAt: now } });
     await tx.ticketAssignment.create({ data: { ticketId: t.id, assigneeId, teamId: t.teamId, assignedById: assigneeId } });
-    history.push({ ticketId: t.id, actorId: assigneeId, action: 'ASSIGNED', field: 'assignee', newValue: assigneeId });
+    history.push({ ticketId: t.id, actorId: assigneeId, action: 'ASSIGNED', field: 'assignee', newValue: auth.user.name });
   }
 
   const resolutionNotes = input.resolutionNotes?.trim() || t.resolutionNotes;
